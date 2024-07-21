@@ -7,6 +7,10 @@
 1. 测试程序从SpringBoot项目改为简单程序（不依赖第三方库）
 2. 产生初始GC（gc1.log）日志，并进行具体分析
 
+第三周：
+
+1. 测试堆大小的影响
+
 ## 一、背景与考虑方面
 
 ### 1.1 背景
@@ -58,7 +62,7 @@ public class ParallelGCTest {
 }	
 ```
 
-### 2.2 JVM参数
+### 2.2 JVM命令
 
 ```java
 -XX:+UseParallelGC		//使用并行垃圾收集器（Parallel GC）
@@ -274,5 +278,232 @@ GC整体日志分析
 - **调整Parallel GC线程数**：调整GC线程数与可用CPU核心数匹配，提高并行GC的效率，充分利用多核处理器的性能。
 - **调整Survivor区的比例**：Survivor区的使用情况较高，可以调整Survivor区的比例，以确保Eden区到Survivor区的对象有足够的空间存放。
 
+## 四、调优
 
+**初始JVM：ParallelGCThreads参数**：ParallelGCThreads=10
+
+**日志位置**：[gc1.log](./gclogs/gc1.log)
+
+### 4.1 Parallel GC线程
+
+#### 4.1.1 **JVM修改参数：ParallelGCThreads=12**
+
+Java命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=12
+-Xlog:gc*:file=gc.log
+```
+
+日志位置：[CPUs12Use12.log](./gclogs/CPUs12Use12.log)
+
+实际效果：
+
+![](.\imgs\CPUs12Use12.png)
+
+**分析**：
+
+- **Full GC暂停时间显著增加**(11.350ms --> 26.849ms)，说明在增加线程数后，Full GC阶段的某些操作时间变长。
+- 年轻代GC暂停时间从：2.728ms - 9.136ms  ——>  0.384ms - 15.279ms，最大值增加也有可能是线程数增加引起的调度开销。
+
+#### 4.1.2 **JVM修改参数：ParallelGCThreads=8**
+
+Java命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=8
+-Xlog:gc*:file=gc.log
+```
+
+日志位置：[CPUs12Use8.log](./gclogs/CPUs12Use8.log)
+
+实际效果：
+
+![](.\imgs\CPUs12Use8.png)
+
+**分析**：
+
+- **Full GC暂停时间略微增加**(11.350ms --> 12.930ms)，表明减少线程数对Full GC的效率有一定影响，但并不显著。
+- 年轻代GC暂停时间从：2.728ms - 9.136ms  -->  0.470ms - 15.477ms，最大值增加可能是线程数减少导致的GC任务处理时间变长。
+
+#### 4.1.3 **JVM修改参数：ParallelGCThreads=5**
+
+Java命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=5
+-Xlog:gc*:file=gc.log
+```
+
+日志位置：[CPUs12Use5.log](./gclogs/CPUs12Use5.log)
+
+实际效果：
+
+![](.\imgs\CPUs12Use5.png)
+
+**分析**：
+
+- 初始（warmup）阶段的第一次GC暂停时间较长（102.593ms）。
+- 年轻代GC暂停时间大部分维持在6.493ms - 13.443ms。
+- 没有触发Full GC
+
+#### 4.1.4 思考总结
+
+**12线程设置**：加线程数并没有显著优化年轻代GC的暂停时间，相反，还出现了较大的暂停时间波动。Full GC暂停时间明显增加，表明增加线程数在Full GC阶段的效率下降。
+
+**8线程设置**：根据观察结果，减少线程数对年轻代GC的暂停时间有负面影响，虽然对Full GC影响不大。
+
+**5线程设置**：在某些情况下减少了GC频率，但GC暂停时间波动较大，可能影响系统的稳定性和响应时间。并且，在增加程序运行时常后（1500iter - 4500iter）后，5线程GC次数和时长大于10线程的GC时长。
+
+**结论**：后续保持**Parallel GC线程数为初始值10**，调优其他参数。
+
+### 4.2 堆内存
+
+因为堆内存增加，程序运行时间过短，无法进行有效记录，因此增加程序运行时常后（1500iter - 4500iter）代码如下：
+
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+public class ParallelGCTest {
+    public static void main(String[] args) {
+        List<byte[]> list = new ArrayList<>();  // ArrayList存储数组
+        int counter = 0;                        // 初始化计数器
+        int maxIterations = 4500;               // 设置最大迭代次数，避免无限运行
+        while (counter < maxIterations) {
+            // 每次迭代时向list添加1MB
+            list.add(new byte[1024 * 1024]);
+            if (++counter % 100 == 0) {
+                list.clear();
+                System.out.println("Iteration: " + counter + " - Cleared list to trigger GC");
+            }
+            try {
+                // 每次迭代后线程休眠10ms
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                // 处理中断异常，并恢复线程的中断状态
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        System.out.println("Test completed");
+    }
+}
+```
+
+#### 4.2.1 JVM初始参数（未改动）：-Xms510M
+
+Java命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=10
+-Xlog:gc*:file=gc.log
+```
+
+日志位置：[Heap510mb_4500iter.log](./gclogs/Heap510mb_4500iter.log)
+
+实际效果：
+
+![](.\imgs\Heap510mb_4500iter-1.png)
+
+![](.\imgs\Heap510mb_4500iter-2.png)
+
+**分析**：
+
+- 吞吐量：99.495%。
+- Allocation Failure次数63次 + Full GC 5次
+- 最大GC时间：10.939 ms。
+- 平均GC时间：5.22 ms，
+- 总GC时间（Allocation Failure+Full GC）：355 ms
+- GC所花CPU的时间：150 ms
+
+#### 4.2.2 JVM初始参数：-Xms1G
+
+Java命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=10
+-Xms1024M
+-Xlog:gc*:file=gc.log
+```
+
+日志位置：[Heap1G_4500iter.log](./gclogs/Heap1G_4500iter.log)
+
+实际效果：
+
+![](.\imgs\Heap1G_4500iter-1.png)
+
+![](.\imgs\Heap1G_4500iter-2.png)
+
+**分析**：
+
+- 吞吐量：99.842%
+- Allocation Failure次数20次
+- 最大GC时间：8.871ms
+- 平均GC时间：5.57 ms
+- 总GC时间（Allocation Failure+Full GC）：111 ms
+- GC所花CPU的时间：非常低，总体对CPU影响不大
+
+#### 4.2.3 JVM初始参数：-Xms2G / -Xms4G / -Xms8G
+
+Java主命令：
+
+```java
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=10
+-Xlog:gc*:file=gc.log
+```
+
+Java修改命令：
+
+```java
+-Xms2G
+-Xms4G
+-Xms8G
+```
+
+日志位置：[Heap2G_4500iter.log](./gclogs/Heap2G_4500iter.log)、[Heap4G_4500iter.log](./gclogs/Heap4G_4500iter.log)、[Heap8G_4500iter.log](./gclogs/Heap8G_4500iter.log)
+
+实际效果：
+
+![](.\imgs\Heap248G_4500iter.png)
+
+**分析**：
+
+|                                        | Heap2G_4500iter | Heap4G_4500iter | Heap8G_4500iter |
+| -------------------------------------- | --------------- | --------------- | --------------- |
+| 吞吐量                                 | 99.926%         | 99.927%         | 99.9%           |
+| Allocation Failure次数                 | 9               | 4               | 2               |
+| 最大GC时间                             | 8.060ms         | *24*.176ms      | *47*.807ms      |
+| 平均GC时间                             | 5.74 ms         | 12.8 ms         | 35.0 ms         |
+| 总GC时间（Allocation Failure+Full GC） | 51.7 ms         | 51.3ms          | 70.0 ms         |
+| GC所花CPU的时间                        | 非常低          | 140 ms          | 380ms           |
+
+#### 4.2.4 思考总结
+
+**吞吐量：4GB > 2GB > 8GB > 1GB > 510MB**：较大的初始堆内存减少了GC频率，增加了应用程序在不进行GC时执行有用工作的时间，从而提高了吞吐量。而太大的初始内存
+
+**GC频率（次数）：8GB < 4GB < 2GB < 1GB < 510MB**： 初始堆内存为8GB时，GC频率最低，减少了应用程序的打断次数。
+
+**总GC时间：4GB < 2GB < 8GB < 1GB < 510MB**：初始堆内存为4GB时，因为平均GC时间最少 + GC次数为主要原因，GC总时间最少。
+
+**最大GC时间：2GB < 1GB < 510MB < 4GB < 8GB**：初始堆内存为2GB时，最大GC时间最小。4G和8G最大GC时间多的原因，是初始GC（warmup阶段）花费时间较多。
+
+**平均GC时间：510MB < 1GB < 2GB < 4GB < 8GB** ：初始堆内存为510MB时，平均GC时间最短。但更高的GC频率可能抵消其优势。
+
+**GC所花CPU的时间：1GB = 2GB < 4GB < 510MB < 8GB**：1G和2G很低，对CPU影响不大。
+
+**总结**：
+
+- 4GB和8GB在GC次数上面有很大优势，但是却反而花费更多的GC时间，并且有一定量的CPU时间花费，导致吞吐量反而下降，因此后续要重点考核。
+
+- 后续将初始堆内存设置为 **2、4、8GB**，研究其年轻代和老年代的内存比例大小，希望以**提高吞吐量和减少GC频率**。
+- 程序上后续已经做过初步2、3个实验，但是已经**发现年轻代GC触发频率很高**，因此，后续需要改一下程序，期望模拟更大、更随机的内存模拟环境，减少年轻代的频发并增加Full GC次数。
+
+### 4.3 年轻代和老年代比例
 
