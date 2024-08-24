@@ -14,6 +14,15 @@
 1. 测试堆大小的影响，分析原因
 1. 规划下周测试内容**（待定）**
 
+第四周：
+
+1. 重新设计程序：使部分byte[]对象能够存活更长的时间；控制对象产生大小，以达到调整创建对象（消耗内存）的速率
+1. 因为控制速率和代码重新修改，将从堆内存，重新进行测试
+
+注意：虽然前面因为知识储备、实际操作问题，导致前面部分大多已经舍弃，但是暂不删除其内容（出于工作量考虑），可以直接从这里直接跳转到[新的调优版本](#五、调优：代码重制版)
+
+
+
 ## 一、背景与考虑方面
 
 ### 1.1 背景
@@ -303,7 +312,7 @@ Java命令：
 
 实际效果：
 
-![](.\imgs\CPUs12Use12.png)
+![](./imgs/CPUs12Use12.png)
 
 **分析**：
 
@@ -324,7 +333,7 @@ Java命令：
 
 实际效果：
 
-![](.\imgs\CPUs12Use8.png)
+![](./imgs/CPUs12Use8.png)
 
 **分析**：
 
@@ -345,7 +354,7 @@ Java命令：
 
 实际效果：
 
-![](.\imgs\CPUs12Use5.png)
+![](./imgs/CPUs12Use5.png)
 
 **分析**：
 
@@ -411,9 +420,9 @@ Java命令：
 
 实际效果：
 
-![](.\imgs\Heap510mb_4500iter-1.png)
+![](./imgs/Heap510mb_4500iter-1.png)
 
-![](.\imgs\Heap510mb_4500iter-2.png)
+![](./imgs/Heap510mb_4500iter-2.png)
 
 **分析**：
 
@@ -439,9 +448,9 @@ Java命令：
 
 实际效果：
 
-![](.\imgs\Heap1G_4500iter-1.png)
+![](./imgs/Heap1G_4500iter-1.png)
 
-![](.\imgs\Heap1G_4500iter-2.png)
+![](./imgs/Heap1G_4500iter-2.png)
 
 **分析**：
 
@@ -474,7 +483,7 @@ Java修改命令：
 
 实际效果：
 
-![](.\imgs\Heap248G_4500iter.png)
+![](./imgs/Heap248G_4500iter.png)
 
 **分析**：
 
@@ -508,3 +517,692 @@ Java修改命令：
 - 后续将初始堆内存设置为 **2、4、8GB**，研究其年轻代和老年代的内存比例大小，希望以**提高吞吐量和减少GC频率**。
 - 程序上后续已经做过初步2、3个实验，但是已经**发现年轻代GC触发频率很高**，因此，后续需要改一下程序，期望模拟更大、更随机的内存模拟环境，减少年轻代的频发并增加Full GC次数。
 
+
+
+## 五、调优：代码重制版
+
+代码重置原因：之前代码没有控制对象的存活时间，同时对象创建（内存消耗）速率和清除对象速率没有得到控制，因此需要先从程序方面，控制这些问题，最后再配合jvm参数调整。
+
+通过代码重置后，对象创建速度从原本代码的1G/s降到了130mb/s，晋升速度也从100mb/s下降到了6mb/s。
+
+同时因为当堆内存大于2G的时候，相比于133.41 M/s的对象创建速度，过于的大。所以会发现Full GC次数在200s内很难观测到（仅1次），因此我们不再进行大于4G的展示，仅在512m，1G，2G中进行JVM参数调优
+
+代码如下：
+<details>
+    <summary>点击展开/折叠程序</summary>
+
+```java
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Queue;
+
+public class ParallelGCTest {
+    private static final int MAX_POOL_SIZE = 1000; // 最大对象池大小
+    private static final Queue<byte[]> OBJECT_POOL = new LinkedList<>(); // 对象池
+
+    public static void main(String[] args) {
+        List<byte[]> list = new ArrayList<>(); // ArrayList存储数组
+        List<byte[]> longerLivedList = new ArrayList<>(); // 存放长时间存活的对象
+        int counter = 0; // 初始化计数器
+        int maxIterations = 2000; // 设置最大迭代次数，避免无限运行
+        int[] martx = new int[]{1, 1, 5, 5, 5, 5, 5, 5, 10, 10, 20, 50, 100};
+        int j = 0;
+        int longerLivedThreshold = 7; // 定义一个阈值，使部分对象存活更长时间
+
+        while (counter < maxIterations) {
+            byte[] array = getObjectFromPool(); // 从对象池获取对象
+            if (array == null) {
+                array = new byte[martx[j] * 1024 * 1024]; // 如果对象池为空，分配新对象
+            }
+            counter++;
+            list.add(array);
+            if (counter % longerLivedThreshold == 0) {
+                longerLivedList.add(array);
+            }
+
+            j = (j + 1) % martx.length;
+            list.subList(0, list.size() / 2).clear();
+            System.out.println("Iteration: " + counter + " - Cleared list to trigger GC");
+
+            if (counter % (longerLivedThreshold * 5) == 0) {
+                recycleObjects(longerLivedList); // 回收长时间存活的对象到对象池
+                System.out.println("Cleared longerLivedList to simulate longer-lived object processing");
+            }
+
+            try {
+                Thread.sleep(100); // 每次迭代后线程休眠100ms
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        System.out.println("Test completed");
+    }
+
+    private static byte[] getObjectFromPool() {
+        return OBJECT_POOL.poll(); // 从对象池获取对象
+    }
+
+    private static void recycleObjects(List<byte[]> objects) {
+        if (OBJECT_POOL.size() < MAX_POOL_SIZE) {
+            OBJECT_POOL.addAll(objects); // 将对象添加回对象池
+        }
+        objects.clear(); // 清空列表
+    }
+}
+```
+</details>
+
+
+
+### 5.1 堆内存512m
+
+#### 5.1.1  Parallel GC线程-512m
+
+**JVM修改参数：-XX:ParallelGCThreads=n**
+
+此实验，初步从线程数量为切入点，主要观察512m，1G在不同线程数量上，重要参数是否有大的改变。
+
+因为线程数量不是越多越好，结合本次实验的物理环境，将重点观察2，4，6(物理核心数量)，8，12（逻辑处理器数量）
+
+<img src="./imgs/CPU物理情况.png" style="zoom:30%;" />
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-Xms512m
+-Xmx512m
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:ParallelGCThreads=2、4、6、8、10、12
+
+**分析日志**：
+
+1. 随着线程数量增加，GC吞吐量进行轻微上升
+2. 随着线程数量增加，GC总暂停时间，基本增加，只有线程数=12时进行再度下降，但因为总时间也有波动，因此仍然按照GC吞吐量为准
+3. 随着线程数量增加，年轻代GC次数有不同程度下降，线程数=6时次数最少
+4. 随着线程数量增加，老年代GC次数轻微上升
+
+**总结**：线程数=2 时，GC吞吐量是最佳，并且因为尽量避免老年代GC的产生，也是Full GC最少的情况，其中线程数=6时，因为Young GC次数下降明显，也会作为后续的一个考虑。因此，选择线程等于6进行后续调优
+
+**日志位置**：
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads2_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads2_Xmx512m_Xms512m.log)
+
+[ParallelGCThreads4_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads4_Xmx512m_Xms512m.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m.log)
+
+[ParallelGCThreads8_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads8_Xmx512m_Xms512m.log)
+
+[ParallelGCThreads10_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads10_Xmx512m_Xms512m.log)
+
+[ParallelGCThreads12_Xmx512m_Xms512m.log](./gclogs/ParallelGCThreads12_Xmx512m_Xms512m.log)
+
+</details>
+
+
+
+**图片分析**：
+
+![](./imgs/512mb对应线程数.png)
+
+![](./imgs/512mb对应线程数_1.png)
+
+
+
+#### 5.1.2  NewRatio年轻代与老年代比例-512m6线程
+
+**JVM修改参数：-NewRatio=n**
+
+本参数改动，基于堆内存512mb、6线程数进行设置
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=6
+-Xms512m
+-Xmx512m
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:NewRatio=1、2、3、4、5、6、7、8、9
+
+**分析日志**：
+
+1. 随着NewRatio=1增加，GC吞吐量呈现先下降（NewRatio3-6）再上升（NewRatio7-9）到近基准的趋势
+2. 随着NewRatio=1增加，Yong GC次数先增加再略微下降趋势
+3. 随着NewRatio=1增加，Old GC次数先增加再略微下降趋势
+
+**总结**：
+
+1. NewRatio=1 时，GC吞吐量是最佳，并且因为尽量避免老年代GC的产生，NewRatio=1、2也是Young GC和Full GC最少的情况。
+2. GC数量虽然会随着Old 区域的增加大量增加，但是吞吐量却在NewRatio=7、8、9的时候进行恢复到NewRatio=1附近
+
+**综上，我们将关注NewRatio=1、2、7、8、9在年轻代中Eden区与Survivor区的比例**
+
+
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9.log)
+
+</detail>
+
+**图片分析**：基准NewRatio=9
+
+![](./imgs/512mb对应newratio.png)
+
+![](./imgs/512mb对应newratio_1.png)
+
+#### 5.1.3  Eden:SurvivorRatio
+
+**JVM修改参数：-new_ratio=n, -XX:SurvivorRatio=n**
+
+本参数改动，基于**堆内存512mb、6线程数**进行设置.
+
+new_ratio = [1, 2, 7, 8, 9]
+
+survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=6
+-Xms512m
+-Xmx512m
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:NewRatio=[1, 2, 7, 8, 9]
+
+-XX:SurvivorRatio= [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+**分析日志**：
+
+1. 当NewRatio=1时，随着SurvivorRatio的增加，整体吞吐量都没有大的波动（1%），GC次数，基本没有大的波动，10%以内，极个别超出50%（SurRatio9-13），但是吞吐量差距不大（0.1%~）。**最佳表现：NewRatio=1 + SurvivorRatio=4  --> GC吞吐：99.72%**
+2. 当NewRatio=2（jvm默认参数）时，随着SurvivorRatio的增加，即Eden内存的增加，GC吞吐量，呈现上升趋势，最大值在SurvivorRatio=5,6出现。Young GC和Full GC次数，均在此时达到平衡（YoungGC适量增加，Full GC适量减少）。**最佳表现：NewRatio=2 + SurvivorRatio=5/6  --> GC吞吐：99.73%**
+3. 当NewRatio=7时，随着SurvivorRatio的增加，整体吞吐量都没有大的波动（0.05%），Young GC次数逐渐减少（296 --> 221），但是Full GC次数不变（**65**）**最佳表现：NewRatio=7 + SurvivorRatio=10-13  --> GC吞吐：99.67%**
+4. 当NewRatio=8时，随着SurvivorRatio的增加，整体吞吐量都没有大的波动（0.05%），Young GC次数逐渐减少（362 --> 251），但是Full GC次数不变（**65**）**最佳表现：NewRatio=8 + SurvivorRatio=10-13  --> GC吞吐：99.70%**
+5. 当NewRatio=9时，随着SurvivorRatio的增加，整体吞吐量都没有大的波动（0.05%），Young GC次数先上升再下降最后再上升（最低278 -> 254），但是Full GC次数不变（**65**）**最佳表现：NewRatio=9 + SurvivorRatio=7  --> GC吞吐：99.67%**
+
+
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio9.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio10.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio9.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio10.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio9.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio10.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio7_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio9.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio10.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio8_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio9.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio10.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio13.log)
+
+</detail>
+
+**图片分析**：基准ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1/2/7/8/9
+
+![](./imgs/512mNew1SurN.png)
+
+![](./imgs/512mNew1SurN_1.png)
+
+![](./imgs/512mNew2SurN.png)
+
+![](./imgs/512mNew2SurN_1.png)
+
+#### 总结：
+
+1. 当NewRatio=1-2时，代表年轻代区域大，Eden区域变动大；因此，NewRatio=2（jvm默认参数）时，主要的Full GC次数相对减少，因此导致GC吞吐量时最大的
+2. 当NewRatio=7-9时，代表年轻代区域小，Eden区域比例变动实际内存变动小。也就是**老年代区域大，这也是为什么Full GC次数不发生改变的原因**。但因为Young GC次数过大（即使年轻代区域小，每次GC时间短）导致吞吐量无法上升。只有依靠，增加Eden区域来减少Young GC次数，但仍然不能达到jvm参数最优
+
+**综上：**当内存为512m时，NewRatio=2（jvm默认参数） + SurvivorRatio=5/6  --> 
+
+
+
+### 5.2 堆内存大小为1G
+
+#### 5.2.1 Parallel GC线程-1G
+
+分析日志：
+
+1. 随着线程数量增加，GC吞吐量进行轻微下降，GC总暂停时间，基本下降（总时间基本不变）
+2. 随着线程数量增加，年轻代GC次数，老年代GC次数均未发生太多变动（浮动<3%）
+
+**总结**：线程数=6，8 时，GC吞吐量是最佳，并且因为尽量避免老年代GC的产生，也是Full GC最少（相比线程数=2不变）的情况。因为线程数=6，8的时候，GC次数不变，GC时间下降，虽然ms级别对于200s的工作时间影响较小，但是也是主要的提升原因，GC吞吐量上涨0.02%和0.03%
+
+**日志位置**：
+
+[ParallelGCThreads2_Xmx1G_Xms1G](./gclogs/ParallelGCThreads2_Xmx1G_Xms1G.log)
+
+[ParallelGCThreads4_Xmx1G_Xms1G](./gclogs/ParallelGCThreads4_Xmx1G_Xms1G.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G.log)
+
+[ParallelGCThreads8_Xmx1G_Xms1G](./gclogs/ParallelGCThreads8_Xmx1G_Xms1G.log)
+
+[ParallelGCThreads10_Xmx1G_Xms1G](./gclogs/ParallelGCThreads10_Xmx1G_Xms1G.log)
+
+[ParallelGCThreads12_Xmx1G_Xms1G](./gclogs/ParallelGCThreads12_Xmx1G_Xms1G.log)
+
+**图片分析**：
+
+![](./imgs/1G对应线程数.png)
+
+![](./imgs/1G对应线程数_1.png)
+
+
+
+#### 5.2.2 NewRatio年轻代与老年代比例-1G6线程
+
+**JVM修改参数：-NewRatio=n**
+
+本参数改动，基于堆内存1G、6线程数进行设置
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=6
+-Xms1G
+-Xmx1G
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:NewRatio=1、2、3、4、5、6、7、8、9
+
+**分析日志**：
+
+1. 随着NewRatio=1增加，GC吞吐量呈现先下降（NewRatio1-2）再上升（NewRatio4-9）
+2. 随着NewRatio=1增加，Yong GC次数先增加（1-6）再略微下降（7-9）趋势
+3. 随着NewRatio=1增加，Old GC次数成稳步上升的趋势
+
+**总结**：
+
+1. NewRatio=2（jvm参数默认）时，Young GC次数属于平均数，Full GC次数属于较少次数，但是因为GC时间较长，导致吞吐量相对较小
+2. NewRatio=3、5、7、8、9 时，GC吞吐量是最佳，增幅相比于基准（NewRatio=1）提升大于0.2%。GC仅在7的时候，Young GC次数最少，但是Full GC次数最大（增幅最大），因为是GC次数略增幅的同时，GC时间逐步减少，所以导致，NewRatio在7、8、9的时候吞吐量最大。
+3. NewRatio=3、5的时候，Young GC次数相对减少，Full GC次数相对增加，但是因为GC时间较短，导致吞吐量在3、5的时候吞吐量最大
+
+**综上，我们将关注NewRatio=3、5、7、8、9在年轻代中Eden区与Survivor区的比例**
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio1log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio2log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio4log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio6log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8.log)
+
+</detail>
+
+**图片分析**：基准ParallelGCThreads6_Xmx1G_Xms1G_NewRatio2
+
+![](./imgs/1G对应newratio.png)
+
+![](./imgs/1G对应newratio_1.png)
+
+#### 5.2.3 Eden:SurvivorRatio
+
+**JVM修改参数：-new_ratio=n, -XX:SurvivorRatio=n**
+
+本参数改动，基于**堆内存1G、6线程数**进行设置.
+
+new_ratio = [3, 5, 7, 8, 9]
+
+survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=6
+-Xms1G
+-Xmx1G
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:NewRatio=[3, 5, 7, 8, 9]
+
+-XX:SurvivorRatio= [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+**分析日志**：
+
+1. 当NewRatio=3时，随着SurvivorRatio=1的增加，整体吞吐量都没有大的波动（0.05%），Young GC次数，逐步提升，极个别超出20%（SurRatio9-13），导致对应的吞吐量下降。**最佳表现：NewRatio=3 + SurvivorRatio=5  --> GC吞吐：99.77%**
+2. 当NewRatio=5时，随着SurvivorRatio=1的增加，整体吞吐量没有太大波动（0.05%）。Young GC次数，略微下降，Full GC次数轻微浮动。**最佳表现：NewRatio=5 + SurvivorRatio=11  --> GC吞吐：99.79%**
+3. 当NewRatio=7时，随着SurvivorRatio=1的增加，整体吞吐量都没有大的波动（0.1%），Young GC次数先增加逐渐减少（123 --> 272-->136），但是Full GC次数略微减少（23-->20）**最佳表现：NewRatio=7 + SurvivorRatio=5  --> GC吞吐：99.81%**
+4. 当NewRatio=8时，随着SurvivorRatio=1的增加，整体吞吐量都没有大的波动（0.05%），Young GC次数逐渐减少（142--> 119），但是Full GC次浮动不大（22-26）**最佳表现：NewRatio=8 + SurvivorRatio=8/12  --> GC吞吐：99.82%**。
+5. 当NewRatio=9时，随着SurvivorRatio=1的增加，整体吞吐量逐步上升（99.68%-->99.81），Young GC次数逐渐减少（最低283-> 127），但是Full GC次浮动不大（26-->22）**最佳表现：NewRatio=9 + SurvivorRatio=10/13  --> GC吞吐：99.81%**
+
+
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio3.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio5_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio13.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio2.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio3.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio4.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio4.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio5.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio5.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio6.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio6.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio7.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio7.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio8.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio8.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio1.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio9.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio10.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio11.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio11.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio12.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio12.log)
+
+[ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log)
+
+</detail>
+
+**图片分析**：基准ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3/5/7/8/9
+
+![](./imgs/1GNew3SurN.png)
+
+![](./imgs/1GNew3SurN_1.png)
+
+#### 总结：
+
+1. 当NewRatio=3/5时，代表年轻代区域相对大（大于默认值2），当SurvivorRatio增加，Eden区域变大时，有更多的内存在年轻代部分进行处理；因此，NewRatio=5时，主要的Full GC次数相对减少，因此导致GC吞吐量时最大的
+2. 当NewRatio=7-9时，代表年轻代区域小，但因为1G的堆内存，导致当SurvivorRatio增加的时候，Eden区域变大，更多内存在年轻代部分处理，GC次数下降快。老年代区域大，这也是为什么Full GC次数略微下降的原因。但因为Young GC次数过大（即使年轻代区域小，每次GC时间短）导致吞吐量无法上升。只有依靠，增加Eden区域来减少Young GC次数。
+3. **当NewRatio=8时，**SurvivorRatio=1-13整体GC次数较少，变动不大，基本都在99.80%左右浮动（0.03~）是一个整体不错的Jvm参数
+
+**综上：**当内存为1G时，NewRatio=8（jvm默认参数） + SurvivorRatio=8/12  --> GC吞吐：**99.82%**为最佳，原因如[分析日志](分析日志)。
+
+
+
+
+
+#### 在最好的几组里面和[old 面积大点，young小点的表现好的] 设置控制大对象直接进入老年代
+
+#### 设置不同GC算法，在同一个java17下面程序的表现情况，[512m, 1G, 2G]，模拟一下情况
+
+**G1GC: To-space exhausted -> Full GC**
+**ZGC: Allocation Stall**
+**Shenandoah GC: Pacing >Degenerated GC → Full GC**
