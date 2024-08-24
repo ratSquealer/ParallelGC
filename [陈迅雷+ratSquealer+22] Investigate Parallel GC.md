@@ -528,8 +528,10 @@ Java修改命令：
 同时因为当堆内存大于2G的时候，相比于133.41 M/s的对象创建速度，过于的大。所以会发现Full GC次数在200s内很难观测到（仅1次），因此我们不再进行大于4G的展示，仅在512m，1G，2G中进行JVM参数调优
 
 代码如下：
+
 <details>
     <summary>点击展开/折叠程序</summary>
+
 
 ```java
 import java.util.ArrayList;
@@ -630,6 +632,7 @@ public class ParallelGCTest {
 **总结**：线程数=2 时，GC吞吐量是最佳，并且因为尽量避免老年代GC的产生，也是Full GC最少的情况，其中线程数=6时，因为Young GC次数下降明显，也会作为后续的一个考虑。因此，选择线程等于6进行后续调优
 
 **日志位置**：
+
 <details>
     <summary>点击展开/折叠</summary>
 
@@ -714,7 +717,9 @@ public class ParallelGCTest {
 
 [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9.log)
 
-</detail>
+
+
+</details>
 
 **图片分析**：基准NewRatio=9
 
@@ -761,6 +766,7 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 <details>
     <summary>点击展开/折叠</summary>
+
 [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio1.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio1.log)
 
 [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio2.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1_SurRatio12.log)
@@ -891,7 +897,9 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio9_SurRatio13.log)
 
-</detail>
+
+
+</details>
 
 **图片分析**：基准ParallelGCThreads6_Xmx512m_Xms512m_NewRatio1/2/7/8/9
 
@@ -1001,7 +1009,9 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8.log)
 
-</detail>
+
+
+</details>
 
 **图片分析**：基准ParallelGCThreads6_Xmx1G_Xms1G_NewRatio2
 
@@ -1179,7 +1189,9 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log](./gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log)
 
-</detail>
+
+
+</details>
 
 **图片分析**：基准ParallelGCThreads6_Xmx1G_Xms1G_NewRatio3/5/7/8/9
 
