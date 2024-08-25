@@ -12,14 +12,18 @@
 1. 测试线程数量影响，分析原因
 1. 修改测试程序
 1. 测试堆大小的影响，分析原因
-1. 规划下周测试内容**（待定）**
+1. 规划下周测试内容
 
-第四周：
+
+
+### [本次更新]()
+
+第四周：**终版**
 
 1. 重新设计程序：使部分byte[]对象能够存活更长的时间；控制对象产生大小，以达到调整创建对象（消耗内存）的速率
 1. 因为控制速率和代码重新修改，将从堆内存，重新进行测试
 
-注意：虽然前面因为知识储备、实际操作问题，导致前面部分大多已经舍弃，但是暂不删除其内容（出于工作量考虑），可以直接从这里直接跳转到[新的调优版本](#五、调优：代码重制版)
+注意：虽然前面因为知识储备、实际操作问题，导致前面部分大多已经舍弃，但是暂不删除其内容（出于工作量考虑），可以直接从这里直接跳转到[五、调优：代码重制版](#五、调优：代码重制版)
 
 
 
@@ -527,7 +531,9 @@ Java修改命令：
 
 同时因为当堆内存大于2G的时候，相比于133.41 M/s的对象创建速度，过于的大。所以会发现Full GC次数在200s内很难观测到（仅1次），因此我们不再进行大于4G的展示，仅在512m，1G，2G中进行JVM参数调优
 
-代码如下：
+
+
+**代码如下**：
 
 <details>
     <summary>点击展开/折叠程序</summary>
@@ -539,10 +545,10 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
 
+
 public class ParallelGCTest {
     private static final int MAX_POOL_SIZE = 1000; // 最大对象池大小
     private static final Queue<byte[]> OBJECT_POOL = new LinkedList<>(); // 对象池
-
     public static void main(String[] args) {
         List<byte[]> list = new ArrayList<>(); // ArrayList存储数组
         List<byte[]> longerLivedList = new ArrayList<>(); // 存放长时间存活的对象
@@ -916,7 +922,7 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 1. 当NewRatio=1-2时，代表年轻代区域大，Eden区域变动大；因此，NewRatio=2（jvm默认参数）时，主要的Full GC次数相对减少，因此导致GC吞吐量时最大的
 2. 当NewRatio=7-9时，代表年轻代区域小，Eden区域比例变动实际内存变动小。也就是**老年代区域大，这也是为什么Full GC次数不发生改变的原因**。但因为Young GC次数过大（即使年轻代区域小，每次GC时间短）导致吞吐量无法上升。只有依靠，增加Eden区域来减少Young GC次数，但仍然不能达到jvm参数最优
 
-**综上：**当内存为512m时，NewRatio=2（jvm默认参数） + SurvivorRatio=5/6  --> 
+**综上：**当内存为512m时，NewRatio=2（jvm默认参数） + SurvivorRatio=5/6  --> 99.73%
 
 
 
@@ -1201,20 +1207,266 @@ survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
 #### 总结：
 
-1. 当NewRatio=3/5时，代表年轻代区域相对大（大于默认值2），当SurvivorRatio增加，Eden区域变大时，有更多的内存在年轻代部分进行处理；因此，NewRatio=5时，主要的Full GC次数相对减少，因此导致GC吞吐量时最大的
-2. 当NewRatio=7-9时，代表年轻代区域小，但因为1G的堆内存，导致当SurvivorRatio增加的时候，Eden区域变大，更多内存在年轻代部分处理，GC次数下降快。老年代区域大，这也是为什么Full GC次数略微下降的原因。但因为Young GC次数过大（即使年轻代区域小，每次GC时间短）导致吞吐量无法上升。只有依靠，增加Eden区域来减少Young GC次数。
-3. **当NewRatio=8时，**SurvivorRatio=1-13整体GC次数较少，变动不大，基本都在99.80%左右浮动（0.03~）是一个整体不错的Jvm参数
+1. 当**NewRatio=3/5**时，代表年轻代区域相对大（大于默认值2），当SurvivorRatio增加，Eden区域变大时，有更多的内存在年轻代部分进行处理；同时，NewRatio=5时（老年代内存变大），主要的Full GC次数相对减少，因此导致GC吞吐量时最大的
+2. 当**NewRatio=7-9**时，代表年轻代区域小，但因为1G的堆内存，导致当SurvivorRatio增加的时候，Eden区域变大，更多内存在年轻代部分处理，GC次数下降快。同时老年代区域大，这也是为什么Full GC次数略微下降的原因。但因为Young GC次数过大（即使年轻代区域小，每次GC时间短）导致吞吐量无法上升。只有依靠，增加Eden区域来减少Young GC次数。
+3. **当NewRatio=8时**，SurvivorRatio=1-13整体GC次数较少，变动不大，基本都在99.80%左右浮动（0.03~）是一个整体不错的Jvm参数
 
-**综上：**当内存为1G时，NewRatio=8（jvm默认参数） + SurvivorRatio=8/12  --> GC吞吐：**99.82%**为最佳，原因如[分析日志](分析日志)。
-
-
+**综上**：当内存为1G时，NewRatio=8（jvm默认参数） + SurvivorRatio=8/12  --> GC吞吐：**99.82%**为最佳，原因如[分析日志](分析日志)。
 
 
 
-#### 在最好的几组里面和[old 面积大点，young小点的表现好的] 设置控制大对象直接进入老年代
+### 5.3 2G堆内存
 
-#### 设置不同GC算法，在同一个java17下面程序的表现情况，[512m, 1G, 2G]，模拟一下情况
+由于程序处理速度较快（120-150mb/s）、平均对象晋升较大、最大单词对象晋升较大，但是对于2G的堆内存来说，老年代区域应该足够，因此，主要考虑如何减少Full GC的原因。
 
-**G1GC: To-space exhausted -> Full GC**
-**ZGC: Allocation Stall**
-**Shenandoah GC: Pacing >Degenerated GC → Full GC**
+#### 5.3.1 Parallel GC线程-1G
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-Xms2G
+-Xmx2G
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:ParallelGCThreads=2、4、6、8、10、12
+
+**分析日志**：
+
+1. 随着线程数量增加，GC吞吐量进行轻微下降，GC总暂停时间，基本下降（总时间基本不变）
+2. 随着线程数量增加，年轻代GC次数，老年代GC次数均未发生太多变动（浮动<3%）
+
+**总结**：线程数=4，10，12时，GC吞吐量是最佳，并且因为尽量避免老年代GC的产生，也是**Full GC最少为0** 的情况。考虑线程数量设置的偶数偏差问题，后续实验用线程数为3 和 10 进行后续实验
+
+**日志位置**：
+
+[ParallelGCThreads2_Xmx2G_Xms2G](./gclogs/ParallelGCThreads2_Xmx2G_Xms2G.log)
+
+[ParallelGCThreads4_Xmx2G_Xms2G](./gclogs/ParallelGCThreads4_Xmx2G_Xms2G.log)
+
+[ParallelGCThreads6_Xmx2G_Xms2G](./gclogs/ParallelGCThreads6_Xmx2G_Xms2G.log)
+
+[ParallelGCThreads8_Xmx2G_Xms2G](./gclogs/ParallelGCThreads8_Xmx2G_Xms2G.log)
+
+[ParallelGCThreads10_Xmx2G_Xms2G](./gclogs/ParallelGCThreads10_Xmx2G_Xms2G.log)
+
+[ParallelGCThreads12_Xmx2G_Xms2G](./gclogs/ParallelGCThreads12_Xmx2G_Xms2G.log)
+
+​	
+
+**图片分析**：
+
+![](./imgs/2GG对应线程数.png)
+
+![](./imgs/2GG对应线程数_1.png)
+
+
+
+#### 5.3.2 NewRatio年轻代与老年代比例-2G
+
+**JVM修改参数：-NewRatio=n**
+
+本参数改动，基于堆内存1G、6线程数进行设置
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-Xms2G
+-Xmx2G
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:ParallelGCThreads=3/10
+
+-XX:NewRatio=1、2、3、4、5、6、7、8、9
+
+**分析日志**：
+
+无论是线程数量=3还是线程数量=10，均出现
+
+1. 随着NewRatio=1增加，GC吞吐量持续下降
+2. 随着NewRatio=1增加，Yong GC次数成持续上升的趋势
+3. 随着NewRatio=1增加，Old GC次数成持续上升的趋势
+
+
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads3_Xmx2G_Xms2G_NewRatio1.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio1.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio2.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio2.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio3.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio3.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio4.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio4.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio5.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio5.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio6.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio6.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio7.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio7.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio8.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio8.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio9.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio9.log)  [ParallelGCThreads3_Xmx2G_Xms2G_NewRatio10.log](gclogs/ParallelGCThreads3_Xmx2G_Xms2G_NewRatio10.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio2.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio2.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio3.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio3.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio4.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio4.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio5.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio5.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio6.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio6.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio7.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio7.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio8.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio8.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio9.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio9.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio10.log](gclogs/ParallelGCThreads10_Xmx2G_Xms2G_NewRatio10.log) 
+
+
+
+</details>
+
+**图片分析**：基准ParallelGCThreads3/10_Xmx2G_Xms2G
+
+<img src="./imgs/2GG对应newratio.png" style="zoom:50%;" />
+
+<img src="./imgs/2G对应newratio_1.png" style="zoom:50%;" />
+
+**总结**：
+
+线程数3/10，均出现，NewRatio = 1时，吞吐量最高为99.84，并且Full GC次数和Young GC次数均是最好的，Full GC甚至为0。说明在年轻代内存大，能在年轻代处理垃圾内存，可以满足程序所需。
+
+**综上，我们将关注线程=10、NewRatio=1在年轻代中Eden区与Survivor区的比例**，确认在年轻代满足的情况，是否是Eden ：Survivor ：Survivor = 8 : 1 : 1的默认情况是最好的，或者说有无更加的调优空间
+
+
+
+#### 5.2.3 Eden:SurvivorRatio
+
+**JVM修改参数：-XX:SurvivorRatio=n**
+
+本参数改动，基于**堆内存2G、10线程数、new_ratio=1**进行设置.
+
+survivor_ratio = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+**参数设置**：Java 8
+
+```
+-XX:+UseParallelGC
+-XX:ParallelGCThreads=10
+-Xms2G
+-Xmx2G
+-XX:NewRatio=1
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+-XX:SurvivorRatio= [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+
+
+
+**分析日志**：
+
+当NewRatio=1时，随着SurvivorRatio=1的增加，吞吐量轻微增加，Young GC次数持续略微下降，当Ratio在8-13时，Full GC次数从1开始降为0，导致对应的吞吐量下降。**最佳表现：NewRatio=1 + SurvivorRatio=10  --> GC吞吐：99.90%**
+
+<img src="imgs/2GNew1Sur10时间图.png" alt="2GNew1Sur10时间图" style="zoom:33%;" />
+
+
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio1.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio1.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio2.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio2.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio3.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio3.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio4.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio4.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio5.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio5.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio6.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio6.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio7.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio7.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio8.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio8.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio9.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio9.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10.log) [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio11.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio11.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio12.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio12.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio13.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio13.log) 
+
+
+
+</details>
+
+**图片分析**：基准ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1
+
+<img src="imgs/2GGNew1SurN.png" alt="2GNew1SurN" style="zoom:50%;" />
+
+<img src="imgs/2GNew1SurN_1.png" alt="2GNew1SurN" style="zoom:50%;" />
+
+
+
+**总结**：
+
+线程数3/10，均出现，NewRatio = 1时，吞吐量最高为99.84，并且Full GC次数和Young GC次数均是最好的，Full GC甚至为0。说明在年轻代内存大，能在年轻代处理垃圾内存，可以满足程序所需。
+
+在NewRatio=1，即年轻代空间较大的前提下，调整SurvivorRatio提高Eden区域大小，可以使垃圾内存在年轻代中进行处理，因此，也可以从实验中得出，在较高的SurvivorRatio比例下，更容易减少老年代的压力，从而将个位数的Full GC降为 0，即最好表现，就是通过**低NewRatio比例 + 高SurvivorRatio比例进行调优该程序**。
+
+
+
+
+
+
+
+### 针对调整
+
+因为代码中可以看见，程序处理速度较快（120-150mb/s）、平均对象晋升较大、最大单词对象晋升较大，单次晋升的对象偏多，这可能会导致Young GC长暂停和Full GC。
+
+下图为堆内存为512m和1G的时候对象统计情况：
+
+![对象晋升速度](./imgs/对象晋升速度.png)
+
+![对象晋升速度](./imgs/对象晋升速度_1.png)
+
+因上述原因，我想通过将大对象直接放进老年代的想法，从而减少晋升次数，预测在1、2G堆内存中的表现应该会优于512m内存。
+
+**思路步骤**：选取当前各内存中表现最好的情况，添加`-XX:PretenureSizeThreshold=50m`的jvm参数，通过将大的内存对象，直接放入到老年代内存中，查看是否可以更加优化。
+
+**jvm参数**
+
+```
+-XX:+UseParallelGC
+-XX:PretenureSizeThreshold=50m
+-Xloggc:gc.log
+-XX:+PrintGCDetails
+```
+
+其余jvm参数由之前表现情况来判断。
+
+**日志位置**：
+
+<details>
+    <summary>点击展开/折叠</summary>
+
+[ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio5_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio5_UseSizeThreshold.log) [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio5.log](gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio5.log)  [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6.log](gclogs/ParallelGCThreads6_Xmx512m_Xms512m_NewRatio2_SurRatio6.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio7_SurRatio5.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio13.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio10_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio10_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio10.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio9_SurRatio10.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio12.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8_UseSizeThreshold.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8_UseSizeThreshold.log)  [ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8.log](gclogs/ParallelGCThreads6_Xmx1G_Xms1G_NewRatio8_SurRatio8.log)   [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10_UseSizeThreshold.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10_UseSizeThreshold.log)  [ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10.log](gclogs\ParallelGCThreads10_Xmx2G_Xms2G_NewRatio1_SurRatio10.log) 
+
+
+
+</details>
+
+
+
+**图片分析**：每个堆内存中表现最好的情况作为基准，仅添加`-XX:PretenureSizeThreshold=50m`的jvm参数
+
+<img src="imgs/512m限高.png" alt="512m限高" style="zoom:50%;" />
+
+<img src="imgs/1G限高.png" alt="1G限高" style="zoom:50%;" />
+
+<img src="imgs/2G限高.png" alt="2G限高" style="zoom:50%;" />
+
+**总结**：
+
+当堆内存为512m时，相比于程序的内存产生和清理速度，年轻代和老年代空间都比较局促，由于添加的jvm参数`-XX:PretenureSizeThreshold=50m`过将大的内存对象，直接放入到老年代内存中，导致老年代内存更加局促，反而略微增加Full GC次
+
+当堆内存为1G的时候，相比于程序的内存产生和清理速度，年轻代和老年代空间比较合适，因为大的对象直接进入老年代中，同时年轻代能更好的空间处理内存垃圾，所以吞吐量只有轻微下滑，甚至不变。因为老年代内存空间也增加，导致Full GC次数都不发生改变。
+
+当堆内存为2G的时候，因为最佳表现，是基本所有的垃圾都在Young GC阶段解决，强行提升老年代晋升速度，给老年代增加压力，导致Full GC的产生，反而会降低效果。
+
+
+
+
+
+## issue 总结
+
+通过实验可以看出，对于该程序，因为**程序清理内存的速度更快、有大内存对象**，导致同时年轻代处理对象速度要求很高，老年代内存压力很大。又因为是Parallel GC，因此我们主要观察**吞吐量和Full GC次数**。
+
+1. 当**堆内存为512m**时，面对高创建速度和清理速度的程序，通过预测并且实验证明，Young GC和Full GC次数均很多，因此如何协调jvm参数，即年轻代大小和年轻代中Eden大小，就显得尤为重要。
+
+   要通过NewRatio的相对提升满足Full GC次数相对较少的同时，因为堆内存本身较小，所以Full GC次数较为难减少，因此转而控制SurvivorRatio来提升Eden区域减少Young GC次数（在年轻代就处理），并且Survivor区域足够满足作为中转站的职责。这种情况比较难预测，是在NewRatio=2 + SurvivorRatio==5/6  --> 99.73% 达到同层次最优。
+
+2. 当**堆内存为1G**时，面对面对较高的创建速度和很高的清理速度的程序，通过预测并且实验证明，老年代压力较大，因此如何通过协调jvm参数，来减少老年代压力就显得尤为重要。
+
+   当NewRatio较小时，也就是年轻代内存较大，更多的垃圾内存，在Young阶段进行处理，从而减少通往老年代的压力。满足老年代内存较大，从而达到较少的Full GC次数，实验情况也是较大的Young区域，所需的Eden区域相对较小，从而Young GC次数和Full GC次数的类平衡情况。
+
+   通过NewRatio 的提升，老年代内存增加时，就需要考虑提升Young区域中Eden区域的大小，也仍然是符合想让垃圾内存在年轻代中进行处理，因此可以预测并且实验情况时较小的Young区域，希望能获得更多的Eden区域，从而Young GC次数和Full GC次数的类平衡情况。NewRatio=8（jvm默认参数） + SurvivorRatio=8/12  --> GC吞吐：99.82%为最佳。
+
+3. 当**堆内存为2G**时，面对相对中和的创建速度和很高的清理速度的程序，通过实验证明，如何通过调整JVM参数，来减少Full GC次数十分重要。
+
+   因为初始堆内存很大，导致，只要能将这个程序的创建内存速度Cover住，就能解决该程序的吞吐量问题，实验也正是如此，通过提高年轻代内存大小和其中Eden区域大小，让垃圾内存尽量在Young GC阶段处理，从而能实现 **0 Full GC**的情况出现，达到**所有参数中的最佳吞吐量：NewRatio=1 + SurvivorRatio=10  --> GC吞吐：99.90%**
+
+**综上**：
+
+本程序设计有较快的内存创建速度、较快晋升老年代速度、较大的晋升对象大小和较快的内存清理速度。说明有大量的创建的**byte[]对象并不会长时间存活**，那么在Young GC中清除它们会更加有利，不需要通过大对象直接进入老年代来徒增老年代压力导致没有必要的Full GC。
+
+**实验也说明**，增加年轻代的空间和Eden空间（较小堆内存，要协调Eden和Survivor区域大小）是最佳的情况。均达到了各个堆内存的最佳吞吐量，即最少的吞吐时间。
+
+
+
+
+
+
+
